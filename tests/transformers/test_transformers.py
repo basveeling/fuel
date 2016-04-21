@@ -1,20 +1,23 @@
 import logging
 import operator
+import warnings
 from collections import OrderedDict
 
 import numpy
 from numpy.testing import assert_raises, assert_equal
 from six.moves import zip, cPickle
+from picklable_itertools import izip
 
 from fuel import config
 from fuel.datasets import IterableDataset, IndexableDataset
 from fuel.schemes import (ConstantScheme, SequentialScheme,
-                          SequentialExampleScheme)
+                          SequentialExampleScheme, ShuffledScheme)
 from fuel.streams import DataStream
 from fuel.transformers import (
     ExpectsAxisLabels, Transformer, Mapping, SortMapping, ForceFloatX, Filter,
     Cache, Batch, Padding, MultiProcessing, Unpack, Merge,
-    SourcewiseTransformer, Flatten, ScaleAndShift, Cast, Rename, FilterSources)
+    SourcewiseTransformer, Flatten, ScaleAndShift, Cast, Rename,
+    FilterSources, OneHotEncoding, Drop, Duplicate)
 from fuel.transformers.defaults import ToBytes
 
 
@@ -703,6 +706,55 @@ class TestFilterSources(object):
                      {'features': ('batch', 'width', 'height')})
 
 
+class TestOneHotEncoding(object):
+    def setUp(self):
+        self.data = OrderedDict(
+            [('features', numpy.ones((4, 2, 2))),
+             ('targets', numpy.array([[0], [1], [2], [3]]))])
+
+    def test_one_hot_examples(self):
+        wrapper = OneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=4,
+            which_sources=('targets',))
+        assert_equal(
+            list(wrapper.get_epoch_iterator()),
+            [(numpy.ones((2, 2)), numpy.array([[1, 0, 0, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 1, 0, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 0, 1, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 0, 0, 1]]))])
+
+    def test_one_hot_examples_invalid_inputs(self):
+        wrapper = OneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=2,
+            which_sources=('targets',))
+        assert_raises(ValueError, list, wrapper.get_epoch_iterator())
+
+    def test_one_hot_batches(self):
+        wrapper = OneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialScheme(4, 2)),
+            num_classes=4,
+            which_sources=('targets',))
+        assert_equal(
+            list(wrapper.get_epoch_iterator()),
+            [(numpy.ones((2, 2, 2)),
+              numpy.array([[1, 0, 0, 0], [0, 1, 0, 0]])),
+             (numpy.ones((2, 2, 2)),
+              numpy.array([[0, 0, 1, 0], [0, 0, 0, 1]]))])
+
+    def test_one_hot_batches_invalid_input(self):
+        wrapper = OneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialScheme(4, 2)),
+            num_classes=2,
+            which_sources=('targets',))
+        assert_raises(ValueError, list, wrapper.get_epoch_iterator())
+
+
 class VerifyWarningHandler(logging.Handler):
     def __init__(self, *args, **kwargs):
         self.records = []
@@ -734,6 +786,193 @@ class TestExpectsAxisLabels(object):
                       ('b', 'c', 'd'), 'foo')
 
 
+class TestDrop(object):
+    def setUp(self):
+        self.sources = ['volume1', 'volume2', 'weight']
+        self.which_weight = 'weight'
+        self.im_shape = (10, 10)
+        self.vo_shape = (10, 10, 10)
+
+        self.data_im = {}
+        self.data_vo = {}
+        for k in range(len(self.sources)):
+            self.data_im[self.sources[k]] = [0 for x in range(10)]
+            self.data_vo[self.sources[k]] = [0 for x in range(10)]
+
+        for k in range(10):
+            self.data_im[self.sources[0]][k] = numpy.arange(
+                numpy.prod(self.im_shape)).reshape(
+                [1, 1] + list(self.im_shape)).astype(numpy.float32)
+            self.data_vo[self.sources[0]][k] = numpy.arange(
+                numpy.prod(self.vo_shape)).reshape(
+                [1, 1] + list(self.vo_shape)).astype(numpy.float32)
+            self.data_im[self.sources[1]][k] = numpy.arange(
+                numpy.prod(self.im_shape)).reshape(
+                [1, 1] + list(self.im_shape)).astype(numpy.float32)
+            self.data_vo[self.sources[1]][k] = numpy.arange(
+                numpy.prod(self.vo_shape)).reshape(
+                [1, 1] + list(self.vo_shape)).astype(numpy.float32)
+            self.data_im[self.sources[2]][k] = numpy.random.uniform(
+                size=self.im_shape).reshape(
+                [1, 1] + list(self.im_shape)).astype(numpy.float32)
+            self.data_vo[self.sources[2]][k] = numpy.random.uniform(
+                size=self.vo_shape).reshape(
+                [1, 1] + list(self.vo_shape)).astype(numpy.float32)
+
+        self.data = {}
+        for type, data in zip(['image', 'volume'],
+                              [self.data_im, self.data_vo]):
+            self.data[type] = OrderedDict([('volume1', data[self.sources[0]]),
+                                           ('volume2', data[self.sources[1]]),
+                                           ('weight', data[self.sources[2]])])
+
+        layout_im = ('batch', 'channel', 'width', 'height')
+        layout_vol = ('batch', 'channel', 'x', 'y', 'z')
+        self.axis_labels_im = {self.sources[0]: layout_im,
+                               self.sources[1]: layout_im,
+                               self.sources[2]: layout_im}
+        self.axis_labels_vol = {self.sources[0]: layout_vol,
+                                self.sources[1]: layout_vol,
+                                self.sources[2]: layout_vol}
+
+        self.stream = {}
+        self.stream['image'] = DataStream(IterableDataset(
+            self.data['image']), axis_labels=self.axis_labels_im)
+
+        self.stream['volume'] = DataStream(IterableDataset(
+            self.data['volume']), axis_labels=self.axis_labels_vol)
+        self.dropstream = Drop(stream=self.stream['image'],
+                               which_sources=('weight',))
+
+    def test_init(self):
+        # Illegal border
+        kwargs = {'stream': self.stream['image'],
+                  'which_sources': ('weight',),
+                  'border': 'illegal'}
+        assert_raises(TypeError, Drop, **kwargs)
+        # Illegal dropout
+        kwargs = {'stream': self.stream['image'],
+                  'which_sources': ('weight',),
+                  'dropout': 'illegal'}
+        assert_raises(TypeError, Drop, **kwargs)
+
+    def test_border_func(self):
+        # Test illegal flag
+        kwargs = {'volume': 0, 'border': 0, 'flag': 'iswearonmemum'}
+        assert_raises(ValueError, self.dropstream._border_func, **kwargs)
+        # Test uninterpretable number of dimensions
+        kwargs = {'volume': numpy.asarray(0), 'border': 0, 'flag': 'source'}
+        assert_raises(ValueError, self.dropstream._border_func, **kwargs)
+        kwargs = {'volume': numpy.asarray(0), 'border': 0, 'flag': 'example'}
+        assert_raises(ValueError, self.dropstream._border_func, **kwargs)
+        # Test illegal border
+        kwargs = {'volume': self.data_im['volume1'][0], 'border': 5,
+                  'flag': 'source'}
+        assert_raises(ValueError, self.dropstream._border_func, **kwargs)
+        kwargs = {'volume': self.data_im['volume1'][0][0], 'border': 5,
+                  'flag': 'example'}
+        assert_raises(ValueError, self.dropstream._border_func, **kwargs)
+        # Test border dropping for images
+        # Source
+        array = numpy.arange(5*5).reshape([1, 1, 5, 5])
+        result = numpy.zeros([5, 5]).reshape([1, 1, 5, 5])
+        result[:, :, 2, 2] = 12
+        kwargs = {'volume': array, 'border': 2, 'flag': 'source'}
+        assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
+        # Example
+        array = numpy.arange(5*5).reshape([1, 5, 5])
+        result = numpy.zeros([5, 5]).reshape([1, 5, 5])
+        result[:, 2, 2] = 12
+        kwargs = {'volume': array, 'border': 2, 'flag': 'example'}
+        assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
+        # Test border dropping for volumes
+        # Source
+        array = numpy.arange(5*5*5).reshape([1, 1, 5, 5, 5])
+        result = numpy.zeros([5, 5, 5]).reshape([1, 1, 5, 5, 5])
+        result[:, :, 2, 2, 2] = 62
+        kwargs = {'volume': array, 'border': 2, 'flag': 'source'}
+        assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
+        # Example
+        array = numpy.arange(5*5*5).reshape([1, 5, 5, 5])
+        result = numpy.zeros([5, 5, 5]).reshape([1, 5, 5, 5])
+        result[:, 2, 2, 2] = 62
+        kwargs = {'volume': array, 'border': 2, 'flag': 'example'}
+        assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
+
+    def test_dropout_func(self):
+        rng = numpy.random.RandomState(123)
+        array = numpy.arange(5*5).reshape([5, 5])
+        result = array.copy()
+        result[1, 1] = 0
+        result[4, 1] = 0
+        assert numpy.allclose(result, self.dropstream._dropout_func(array,
+                                                                    0.2, rng))
+
+    def test_transform_source_example(self):
+        # Test illegal input
+        kwargs = {'example': numpy.asarray(0), 'source_name': '420'}
+        assert_raises(ValueError, self.dropstream.transform_source_example,
+                      **kwargs)
+        # No transformation
+        array = numpy.arange(5*5*5).reshape([1, 5, 5, 5])
+        kwargs = {'example': array, 'source_name': '420'}
+        assert numpy.allclose(self.dropstream.transform_source_example(
+            array, '420'), array)
+        # Border drop
+        dropstream = Drop(stream=self.stream['image'],
+                          which_sources=('weight',),
+                          border=2)
+        result = numpy.zeros([5, 5, 5]).reshape([1, 5, 5, 5])
+        result[:, 2, 2, 2] = 62
+        assert numpy.allclose(dropstream.transform_source_example(
+            array, '420'), result)
+        # Dropout
+        rng = numpy.random.RandomState(123)
+        array = numpy.arange(5*5).reshape([1, 5, 5])
+        result = array.copy()
+        result[:, 1, 1] = 0
+        result[:, 4, 1] = 0
+        kwargs = {'rng': rng}
+        dropstream = Drop(stream=self.stream['image'],
+                          which_sources=('weight',),
+                          dropout=0.2, **kwargs)
+        assert numpy.allclose(result,
+                              dropstream.transform_source_example(
+                                  array, '420'))
+
+    def test_transform_source_batch(self):
+        # Test illegal source input
+        kwargs = {'source': numpy.asarray(0), 'source_name': '420'}
+        assert_raises(ValueError, self.dropstream.transform_source_batch,
+                      **kwargs)
+        # Test batch
+        # No transformation
+        array = numpy.arange(5*5*5).reshape([1, 1, 5, 5, 5])
+        kwargs = {'source': array, 'source_name': '420'}
+        assert numpy.allclose(self.dropstream.transform_source_batch(
+            array, '420'), array)
+        # Border drop
+        dropstream = Drop(stream=self.stream['image'],
+                          which_sources=('weight',),
+                          border=2)
+        result = numpy.zeros([5, 5, 5]).reshape([1, 1, 5, 5, 5])
+        result[:, :, 2, 2, 2] = 62
+        assert numpy.allclose(dropstream.transform_source_batch(array, '420'),
+                              result)
+        # Dropout
+        rng = numpy.random.RandomState(123)
+        array = numpy.arange(5*5).reshape([1, 1, 5, 5])
+        result = array.copy()
+        result[:, :, 1, 1] = 0
+        result[:, :, 4, 1] = 0
+        kwargs = {'rng': rng}
+        dropstream = Drop(stream=self.stream['image'],
+                          which_sources=('weight',),
+                          dropout=0.2, **kwargs)
+        assert numpy.allclose(result,
+                              dropstream.transform_source_batch(array, '420'))
+
+
 class TestToBytes(object):
     def setUp(self):
         self.string_data = [b'Hello', b'World!']
@@ -755,3 +994,33 @@ class TestToBytes(object):
         decoded_stream = ToBytes(stream)
         assert_equal([self.string_data],
                      [s for s, in decoded_stream.get_epoch_iterator()])
+
+
+class TestDuplicate(object):
+    def setUp(self):
+        rng = numpy.random.RandomState(123)
+        self.stream = DataStream(
+            IndexableDataset(
+                OrderedDict([('features', rng.rand(4, 2, 2)),
+                             ('targets', numpy.array([0, 1, 0, 1]))]),
+                axis_labels={'features': ('batch', 'width', 'height'),
+                             'targets': ('batch',)}),
+            iteration_scheme=SequentialScheme(4, 2))
+
+        self.duplicate = Duplicate(self.stream, 'features')
+
+    def test_init(self):
+        duplicate = Duplicate(self.stream)
+        assert_equal(duplicate.which_sources, self.stream.sources)
+        assert_equal(self.duplicate.which_sources, ['features'])
+
+    def test_sources(self):
+        assert_equal(self.duplicate.sources, ['features',
+                                              'features_duplicate',
+                                              'targets'])
+
+    def test_get_data(self):
+        self.duplicate.get_epoch_iterator()
+        assert_raises(ValueError, self.duplicate.get_data, **{'request': 'k'})
+        data = self.duplicate.get_data()
+        assert_equal(data[0], data[1])

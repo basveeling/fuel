@@ -4,8 +4,12 @@ import logging
 from multiprocessing import Process, Queue
 
 import numpy
+import warnings
 from picklable_itertools import chain, ifilter, izip
 from six import add_metaclass, iteritems
+
+import pyximport
+pyximport.install()
 
 from fuel import config
 from fuel.streams import AbstractDataStream
@@ -239,6 +243,8 @@ class SourcewiseTransformer(Transformer):
                  **kwargs):
         if which_sources is None:
             which_sources = data_stream.sources
+        elif isinstance(which_sources, str):
+            raise TypeError('which_sources parameter should be a tuple of str.')
         self.which_sources = which_sources
         super(SourcewiseTransformer, self).__init__(
             data_stream, produces_examples, **kwargs)
@@ -933,3 +939,303 @@ class FilterSources(AgnosticTransformer):
     def transform_any(self, data):
         return [d for d, s in izip(data, self.data_stream.sources)
                 if s in self.sources]
+
+
+class OneHotEncoding(SourcewiseTransformer):
+    """Converts integer target variables to one hot encoding.
+
+    It assumes that the targets are integer numbers from 0,... , N-1.
+    Since it works on the fly the number of classes N needs to be
+    specified.
+
+    Parameters
+    ----------
+    data_stream : :class:`DataStream` or :class:`Transformer`.
+        The data stream.
+    num_classes : int
+        The number of classes.
+    which_sources : tuple of str
+        Which sources to apply the one hot encoding.
+
+    """
+    def __init__(self, data_stream, num_classes, which_sources, **kwargs):
+        if data_stream.axis_labels:
+            kwargs.setdefault('axis_labels', data_stream.axis_labels.copy())
+        super(OneHotEncoding, self).__init__(
+            data_stream, data_stream.produces_examples, which_sources,
+            **kwargs)
+        self.num_classes = num_classes
+
+    def transform_source_example(self, source_example, source_name):
+        if source_example >= self.num_classes:
+            raise ValueError("source_example must be lower than num_classes")
+        output = numpy.zeros((1, self.num_classes))
+        output[0, source_example] = 1
+        return output
+
+    def transform_source_batch(self, source_batch, source_name):
+        if numpy.max(source_batch) >= self.num_classes:
+            raise ValueError("all entries in source_batch must be lower than "
+                             "num_classes")
+        output = numpy.zeros((source_batch.shape[0], self.num_classes),
+                             dtype=source_batch.dtype)
+        for i in range(self.num_classes):
+            output[source_batch[:, 0] == i, i] = 1
+        return output
+
+
+class OneHotEncodingND(OneHotEncoding):
+    """An extension of the OneHotEncoding that works for ND arrays.
+
+    It assumes that the first dimension (2nd in batch mode) are the channels.
+    All other dimension will be preserved.
+
+    Parameters
+    ----------
+    data_stream : :class:`DataStream` or :class:`Transformer`.
+        The data stream.
+    num_classes : int
+        The number of classes.
+    which_sources : tuple of str
+        Which sources to apply the one hot encoding.
+
+    """
+    def transform_source_example(self, source_example, source_name):
+        if source_example.max() >= self.num_classes:
+            raise ValueError("source_example must be lower than num_classes "
+                             "({})".format(self.num_classes))
+        if source_example.shape[0] != 1:
+            warnings.warn("source_example has no channel dimension.")
+            source_example = numpy.expand_dims(source_example, axis=1)
+        output = numpy.zeros([self.num_classes] +
+                             list(source_example.shape[1:]),
+                             dtype=source_example.dtype)
+        if len(source_example.shape) > 1:
+            for i in range(self.num_classes):
+                output[i, source_example[0] == i] = 1
+        else:
+            output[source_example[0]] = 1
+        return output
+
+    def transform_source_batch(self, source_batch, source_name):
+        if issubclass(source_batch.dtype.type, numpy.number):
+            if numpy.max(source_batch) >= self.num_classes:
+                raise ValueError("all entries in source_batch must be lower "
+                                 "than num_classes ({}), found {}"
+                                 .format(self.num_classes,
+                                         numpy.max(source_batch)))
+            if source_batch.shape[1] != 1:
+                warnings.warn("source_example has no channel dimension.")
+                source_batch = numpy.expand_dims(source_batch, axis=1)
+                output = numpy.zeros([source_batch.shape[0], self.num_classes] +
+                                     list(source_batch.shape[2:]),
+                                     dtype=source_batch.dtype)
+
+            for i in range(self.num_classes):
+                # Set the output of channel i to be the output of the
+                # indicator function: is source_batch of class i?
+                output[:, i][source_batch[:, 0] == i] = 1
+            return output
+        elif source_batch.dtype == numpy.object:
+            return numpy.array([self.transform_source_example(example,
+                                                              source_name)
+                                for example in source_batch])
+        else:
+            raise ValueError("source_batch is of unusable input datatype {}"
+                             .format(source_batch.dtype))
+
+
+class Drop(SourcewiseTransformer):
+    """
+    Implement border drop (of size `border) and dropout`(with probability of
+    dropping of `dropout`) on the volume directed by the variable
+    `which_weight`.
+
+    Parameters:
+    -----------
+    stream: instance of :class:`DataStream`
+        The wrapped data stream.
+    which_sources: str or list of str
+        Name of the sources that will be affected by the transformer.
+    border: int
+        Size of the border of the volume.
+    dropout: float
+        Probability of dropping out an element of the volume.
+    produces_examples: bool
+        True for example streams, False for batch streams
+    """
+    def __init__(self, stream, which_sources,
+                 border=None, dropout=None,
+                 produces_examples=False,
+                 **kwargs):
+        self.rng = kwargs.pop('rng', None)
+        if self.rng is None:
+            self.rng = numpy.random.RandomState(config.default_seed)
+        super(Drop, self).__init__(stream, produces_examples, which_sources,
+                                   **kwargs)
+        if border is None or isinstance(border, int):
+            self.border = border
+        else:
+            raise TypeError("Parameter border should be an int "
+                             "(type passed {}).".format(type(border)))
+        if dropout is not None:
+            if not isinstance(dropout, (float, int)):
+                raise TypeError("Parameter dropout should be float or int, "
+                                "received type {}".format(type(dropout)))
+            if 0 <= dropout <= 1:
+                self.dropout = dropout
+            else:
+                raise ValueError("Parameter dropout should be between "
+                                 "0 and 1 (value passed: {}).".format(dropout))
+        else:
+            self.dropout = dropout
+
+    def get_data(self, request=None):
+        if request is not None:
+            raise ValueError
+        data = next(self.child_epoch_iterator)
+        if self.produces_examples:
+            return self.transform_example(data)
+        else:
+            return self.transform_batch(data)
+
+    def transform_source_batch(self, source, source_name):
+        if isinstance(source, numpy.ndarray) and source.dtype == numpy.object:
+            return numpy.array([self.transform_source_example(im, source_name)
+                                for im in source])
+        elif isinstance(source, numpy.ndarray) and \
+                (source.ndim == 4 or source.ndim == 5):
+            if self.border is not None:
+                source = self._border_func(source, self.border, 'source')
+            if self.dropout is not None:
+                source = self._dropout_func(source, self.dropout, self.rng)
+            return source
+        else:
+            raise ValueError("uninterpretable source format; expected ndarray "
+                             "with ndim = 4 or ndim = 5, got {} instead."
+                             .format(type(source)))
+
+    def transform_source_example(self, example, source_name):
+        if isinstance(example, numpy.ndarray) and \
+                        example.ndim in [3, 4]:
+            if self.border is not None:
+                example = self._border_func(example, self.border, 'example')
+            if self.dropout is not None:
+                example = self._dropout_func(example, self.dropout, self.rng)
+            return example
+        else:
+            raise ValueError("uninterpretable example format; expected "
+                             "ndarray with ndim = 3 or ndim = 4, "
+                             "got {} instead".format(type(example)))
+
+    def _border_func(self, volume, border, flag=None):
+        if flag == 'source':
+            for i in range(len(volume.shape[2:])):
+                if volume.shape[2+i] <= 2 * border:
+                    raise ValueError("border does not fit in image (dimension"
+                                     "{} size {}, borders {}"
+                                     .format(i, volume.shape[2+i],
+                                             2 * border))
+            if volume.ndim == 5:
+                volume[:, :, :border, :, :] = 0
+                volume[:, :, :, :border, :] = 0
+                volume[:, :, :, :, :border] = 0
+                volume[:, :, -border:, :, :] = 0
+                volume[:, :, :, -border:, :] = 0
+                volume[:, :, :, :, -border:] = 0
+            elif volume.ndim == 4:
+                volume[:, :, :border, :] = 0
+                volume[:, :, :, :border] = 0
+                volume[:, :, -border:, :] = 0
+                volume[:, :, :, -border:] = 0
+            else:
+                raise ValueError("uninterpretable number of dimensions for source "
+                                 "volume, expected 4 or 5, got {} instead"
+                                 .format(volume.ndim))
+
+        elif flag == 'example':
+            for i in range(len(volume.shape[1:])):
+                if volume.shape[1+i] <= 2 * border:
+                    raise ValueError("border does not fit in image (dimension "
+                                     "{} size {}, borders {}"
+                                     .format(i, volume.shape[1+i], 2 * border))
+            if volume.ndim == 4:
+                volume[:, :border, :, :] = 0
+                volume[:, :, :border, :] = 0
+                volume[:, :, :, :border] = 0
+                volume[:, -border:, :, :] = 0
+                volume[:, :, -border:, :] = 0
+                volume[:, :, :, -border:] = 0
+            elif volume.ndim == 3:
+                volume[:, :border, :] = 0
+                volume[:, :, :border] = 0
+                volume[:, -border:, :] = 0
+                volume[:, :, -border:] = 0
+            else:
+                raise ValueError("uninterpretable number of dimensions for source "
+                                 "volume, expected 3 or 4, got {} instead"
+                                 .format(volume.ndim))
+        else:
+            raise ValueError("Expected flag as 'source' or 'example' "
+                             "got {} instead".format(flag))
+        return volume.astype(volume.dtype)
+
+    def _dropout_func(self, volume, dropout, rng):
+        dropout_cast = rng.binomial(1,
+                                    1 - dropout,
+                                    size=volume.shape)
+        return (volume * dropout_cast).astype(volume.dtype)
+
+
+class Duplicate(Transformer):
+    """
+    Duplicate the sources directed by which_sources, insert them after their
+    original.
+
+    Parameters:
+    -----------
+    data_stream : :class:`AbstractDataStream`
+        The data stream to wrap.
+    which_sources : tuple of str
+        Which sources to apply the duplicate to.
+    suffix: string, default 'duplicate'
+        Prefix used to rename the duplicated sources
+    produces_example: bool
+        True for example streams, False for batch streams
+    """
+    def __init__(self, data_stream, which_sources=None, suffix='duplicate',
+                 produces_example=False, **kwargs):
+        if which_sources is None:
+            which_sources = data_stream.sources
+        elif isinstance(which_sources, str):
+            which_sources = (which_sources,)
+        self.which_sources = which_sources
+        self.original_sources = list(data_stream.sources)
+        self.new_sources = list(data_stream.sources)
+        self.suffix = suffix
+        axis_labels = data_stream.axis_labels
+        for source in self.which_sources:
+            axis_labels[source + u'_' + self.suffix] = axis_labels[source]
+        kwargs.setdefault('axis_labels', axis_labels)
+        super(Duplicate, self).__init__(data_stream, produces_example,
+                                        **kwargs)
+
+    @property
+    def sources(self):
+        temp_sources = list(self.original_sources)
+        for i, source_name in enumerate(temp_sources):
+            if source_name in self.which_sources:
+                temp_sources.insert(i+1, source_name + '_' + self.suffix)
+        return temp_sources
+
+    def get_data(self, request=None):
+        if request is not None:
+            raise ValueError
+        data = next(self.child_epoch_iterator)
+        data = list(data)
+        temp_sources = list(self.original_sources)
+        for i, (source, source_name) in enumerate(zip(data, temp_sources)):
+            if source_name in self.which_sources:
+                temp_sources.insert(i+1, source_name + 'duplicate')
+                data.insert(i+1, source)
+        return data
