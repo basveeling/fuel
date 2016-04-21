@@ -9,6 +9,7 @@ from picklable_itertools import chain, ifilter, izip
 from six import add_metaclass, iteritems
 
 import pyximport
+
 pyximport.install()
 
 from fuel import config
@@ -34,6 +35,7 @@ class ExpectsAxisLabels(object):
     speed.
 
     """
+
     def verify_axis_labels(self, expected, actual, source_name):
         """Verify that axis labels for a given source are as expected.
 
@@ -65,8 +67,8 @@ class ExpectsAxisLabels(object):
                 if expected != actual:
                     raise AxisLabelsMismatchError("{} expected axis labels "
                                                   "{}, got {} instead".format(
-                                                      self.__class__.__name__,
-                                                      expected, actual))
+                        self.__class__.__name__,
+                        expected, actual))
             self._checked_axis_labels[source_name] = True
 
 
@@ -97,6 +99,7 @@ class Transformer(AbstractDataStream):
         of examples).
 
     """
+
     def __init__(self, data_stream, produces_examples=None, **kwargs):
         super(Transformer, self).__init__(**kwargs)
         if produces_examples is not None:
@@ -176,6 +179,7 @@ class AgnosticTransformer(Transformer):
     and batch implementation of a transformation are the same.
 
     """
+
     @abstractmethod
     def transform_any(self, data):
         """Transforms the input, which can either be an example or a batch."""
@@ -201,6 +205,7 @@ class Mapping(Transformer):
         data under source names `add_sources`.
 
     """
+
     def __init__(self, data_stream, mapping, add_sources=None, **kwargs):
         super(Mapping, self).__init__(
             data_stream, data_stream.produces_examples, **kwargs)
@@ -239,6 +244,7 @@ class SourcewiseTransformer(Transformer):
         which case the mapping is applied to all sources.
 
     """
+
     def __init__(self, data_stream, produces_examples, which_sources=None,
                  **kwargs):
         if which_sources is None:
@@ -306,6 +312,7 @@ class AgnosticSourcewiseTransformer(AgnosticTransformer,
     the same.
 
     """
+
     def transform_any(self, data):
         return self._apply_sourcewise_transformation(
             data=data, method=self.transform_any_source)
@@ -336,6 +343,7 @@ class Flatten(SourcewiseTransformer):
     `numpy.asarray`).
 
     """
+
     def __init__(self, data_stream, **kwargs):
         # Modify the axis_labels dict to reflect the fact that all non-batch
         # axes will be grouped together under the same 'feature' axis.
@@ -382,6 +390,7 @@ class ScaleAndShift(AgnosticSourcewiseTransformer):
         Shifting factor.
 
     """
+
     def __init__(self, data_stream, scale, shift, **kwargs):
         self.scale = scale
         self.shift = shift
@@ -407,6 +416,7 @@ class Cast(AgnosticSourcewiseTransformer):
         in which case ``fuel.config.floatX`` is used.
 
     """
+
     def __init__(self, data_stream, dtype, **kwargs):
         if dtype == 'floatX':
             dtype = config.floatX
@@ -422,6 +432,7 @@ class Cast(AgnosticSourcewiseTransformer):
 
 class ForceFloatX(AgnosticSourcewiseTransformer):
     """Force all floating point numpy arrays to be floatX."""
+
     def __init__(self, data_stream, **kwargs):
         if data_stream.axis_labels:
             kwargs.setdefault('axis_labels', data_stream.axis_labels.copy())
@@ -448,6 +459,7 @@ class Filter(Transformer):
         Should return ``True`` for the samples to be kept.
 
     """
+
     def __init__(self, data_stream, predicate, **kwargs):
         if data_stream.axis_labels:
             kwargs.setdefault('axis_labels', data_stream.axis_labels.copy())
@@ -484,6 +496,7 @@ class Cache(Transformer):
         refilled when needed through the :meth:`get_data` method.
 
     """
+
     def __init__(self, data_stream, iteration_scheme, **kwargs):
         # Note: produces_examples will always be False because of this
         # restriction: the only iteration schemes allowed are BatchSizeScheme,
@@ -537,6 +550,7 @@ class SortMapping(object):
         be reversed.
 
     """
+
     def __init__(self, key, reverse=False):
         self.key = key
         self.reverse = reverse
@@ -572,6 +586,7 @@ class Batch(Transformer):
         raised if a batch of the requested size cannot be provided.
 
     """
+
     def __init__(self, data_stream, iteration_scheme, strictness=0, **kwargs):
         if not data_stream.produces_examples:
             raise ValueError('the wrapped data stream must produce examples, '
@@ -624,6 +639,7 @@ class Unpack(Transformer):
         The data stream to unpack
 
     """
+
     def __init__(self, data_stream, **kwargs):
         if data_stream.produces_examples:
             raise ValueError('the wrapped data stream must produce batches of '
@@ -675,6 +691,7 @@ class Padding(Transformer):
         be used.
 
     """
+
     def __init__(self, data_stream, mask_sources=None, mask_dtype=None,
                  **kwargs):
         if data_stream.produces_examples:
@@ -755,11 +772,12 @@ class Merge(AbstractDataStream):
     ('Hello world!', 'Bonjour le monde!')
 
     """
+
     def __init__(self, data_streams, sources, axis_labels=None):
         super(Merge, self).__init__(
             iteration_scheme=None, axis_labels=axis_labels)
         if not all(data_stream.produces_examples ==
-                   data_streams[0].produces_examples
+                           data_streams[0].produces_examples
                    for data_stream in data_streams):
             raise ValueError('all data streams must produce the same type of '
                              'output (batches or examples)')
@@ -814,6 +832,7 @@ class BackgroundProcess(object):
         the process wil block until a batch is popped from the queue.
 
     """
+
     def __init__(self, data_stream, max_batches):
         self.data_stream = data_stream
         self.batches = Queue(max_batches)
@@ -854,6 +873,7 @@ class MultiProcessing(Transformer):
     robust approach might need to be considered.
 
     """
+
     def __init__(self, data_stream, max_store=100, **kwargs):
         if data_stream.axis_labels:
             kwargs.setdefault('axis_labels', data_stream.axis_labels.copy())
@@ -885,6 +905,7 @@ class Rename(AgnosticTransformer):
         to rename.
 
     """
+
     def __init__(self, data_stream, names, **kwargs):
         sources = list(data_stream.sources)
         for old, new in iteritems(names):
@@ -921,6 +942,7 @@ class FilterSources(AgnosticTransformer):
         Must be a subset of the sources given by the stream.
 
     """
+
     def __init__(self, data_stream, sources, **kwargs):
         if any(source not in data_stream.sources for source in sources):
             raise ValueError("sources must all be contained in "
@@ -958,6 +980,7 @@ class OneHotEncoding(SourcewiseTransformer):
         Which sources to apply the one hot encoding.
 
     """
+
     def __init__(self, data_stream, num_classes, which_sources, **kwargs):
         if data_stream.axis_labels:
             kwargs.setdefault('axis_labels', data_stream.axis_labels.copy())
@@ -1000,6 +1023,7 @@ class OneHotEncodingND(OneHotEncoding):
         Which sources to apply the one hot encoding.
 
     """
+
     def transform_source_example(self, source_example, source_name):
         if source_example.max() >= self.num_classes:
             raise ValueError("source_example must be lower than num_classes "
@@ -1045,6 +1069,69 @@ class OneHotEncodingND(OneHotEncoding):
                              .format(source_batch.dtype))
 
 
+class StructuredOneHotEncoding(SourcewiseTransformer):
+    """Converts a group of k integer target variables to structured
+    one hot encoding.
+
+    It assumes that the targets are a list of K integer numbers.
+    Since it works on the fly the number of classes per group needs to be
+    specified. The targets are assumed to be in source_name 'targets',
+    but can be specified otherwise.
+
+    Parameters
+    ----------
+    data_stream : :class:`DataStream` or :class:`Transformer`.
+        The data stream.
+    num_classes : tuple
+        The number of classes per label group
+
+    """
+
+    def __init__(self, data_stream, num_classes, **kwargs):
+        super(StructuredOneHotEncoding, self).__init__(
+            data_stream, data_stream.produces_examples, **kwargs)
+        self.num_classes = num_classes
+
+    @property
+    def num_groups(self):
+        return len(self.num_classes)
+
+    @property
+    def total_classes(self):
+        return reduce(lambda a, b: a + b, self.num_classes)
+
+    def transform_source_example(self, source_example, source_name):
+        if any(source_example < 0):
+            raise ValueError("source_example ({}) must contain "
+                             "int values >= 0".format(source_example))
+        if any(source_example[h] >= self.num_classes[h] for h in xrange(self.num_groups)):
+            raise ValueError("source_example ({}) must be lower than "
+                             "num_classes ({})".format(source_example,
+                                                       self.num_classes))
+        output = numpy.zeros((1, self.total_classes))
+        output_offset = 0
+        for label_h in xrange(self.num_groups):
+            output[0, output_offset + source_example[label_h]] = 1
+            output_offset += self.num_classes[label_h]
+        return output
+
+    def transform_source_batch(self, source_batch, source_name):
+        if any(source_batch.flat < 0):
+            raise ValueError("source_batch ({}) must contain "
+                             "int values >= 0".format(source_batch))
+        if any(numpy.max(source_batch[:, h]) >= self.num_classes[h] for h in xrange(self.num_groups)):
+            raise ValueError("all entries in source_batch must be lower than "
+                             "num_classes ({})".format(self.num_classes))
+        output = numpy.zeros((source_batch.shape[0], self.total_classes),
+                             dtype=source_batch.dtype)
+        output_offset = 0
+        for label_h in xrange(self.num_groups):
+            for i in range(self.num_classes[label_h]):
+                output[source_batch[:, label_h] == i, i + output_offset] = 1
+            output_offset += self.num_classes[label_h]
+        return output
+
+
 class Drop(SourcewiseTransformer):
     """
     Implement border drop (of size `border) and dropout`(with probability of
@@ -1064,6 +1151,7 @@ class Drop(SourcewiseTransformer):
     produces_examples: bool
         True for example streams, False for batch streams
     """
+
     def __init__(self, stream, which_sources,
                  border=None, dropout=None,
                  produces_examples=False,
@@ -1077,7 +1165,7 @@ class Drop(SourcewiseTransformer):
             self.border = border
         else:
             raise TypeError("Parameter border should be an int "
-                             "(type passed {}).".format(type(border)))
+                            "(type passed {}).".format(type(border)))
         if dropout is not None:
             if not isinstance(dropout, (float, int)):
                 raise TypeError("Parameter dropout should be float or int, "
@@ -1131,10 +1219,10 @@ class Drop(SourcewiseTransformer):
     def _border_func(self, volume, border, flag=None):
         if flag == 'source':
             for i in range(len(volume.shape[2:])):
-                if volume.shape[2+i] <= 2 * border:
+                if volume.shape[2 + i] <= 2 * border:
                     raise ValueError("border does not fit in image (dimension"
                                      "{} size {}, borders {}"
-                                     .format(i, volume.shape[2+i],
+                                     .format(i, volume.shape[2 + i],
                                              2 * border))
             if volume.ndim == 5:
                 volume[:, :, :border, :, :] = 0
@@ -1155,10 +1243,10 @@ class Drop(SourcewiseTransformer):
 
         elif flag == 'example':
             for i in range(len(volume.shape[1:])):
-                if volume.shape[1+i] <= 2 * border:
+                if volume.shape[1 + i] <= 2 * border:
                     raise ValueError("border does not fit in image (dimension "
                                      "{} size {}, borders {}"
-                                     .format(i, volume.shape[1+i], 2 * border))
+                                     .format(i, volume.shape[1 + i], 2 * border))
             if volume.ndim == 4:
                 volume[:, :border, :, :] = 0
                 volume[:, :, :border, :] = 0
@@ -1203,6 +1291,7 @@ class Duplicate(Transformer):
     produces_example: bool
         True for example streams, False for batch streams
     """
+
     def __init__(self, data_stream, which_sources=None, suffix='duplicate',
                  produces_example=False, **kwargs):
         if which_sources is None:
@@ -1225,7 +1314,7 @@ class Duplicate(Transformer):
         temp_sources = list(self.original_sources)
         for i, source_name in enumerate(temp_sources):
             if source_name in self.which_sources:
-                temp_sources.insert(i+1, source_name + '_' + self.suffix)
+                temp_sources.insert(i + 1, source_name + '_' + self.suffix)
         return temp_sources
 
     def get_data(self, request=None):
@@ -1236,6 +1325,6 @@ class Duplicate(Transformer):
         temp_sources = list(self.original_sources)
         for i, (source, source_name) in enumerate(zip(data, temp_sources)):
             if source_name in self.which_sources:
-                temp_sources.insert(i+1, source_name + 'duplicate')
-                data.insert(i+1, source)
+                temp_sources.insert(i + 1, source_name + 'duplicate')
+                data.insert(i + 1, source)
         return data

@@ -17,7 +17,7 @@ from fuel.transformers import (
     ExpectsAxisLabels, Transformer, Mapping, SortMapping, ForceFloatX, Filter,
     Cache, Batch, Padding, MultiProcessing, Unpack, Merge,
     SourcewiseTransformer, Flatten, ScaleAndShift, Cast, Rename,
-    FilterSources, OneHotEncoding, Drop, Duplicate)
+    FilterSources, OneHotEncoding, Drop, Duplicate, StructuredOneHotEncoding)
 from fuel.transformers.defaults import ToBytes
 
 
@@ -706,6 +706,83 @@ class TestFilterSources(object):
                      {'features': ('batch', 'width', 'height')})
 
 
+class TestStructuredOneHotEncoding(object):
+    def setUp(self):
+        self.data = OrderedDict(
+            [('features', numpy.ones((4, 2, 2))),
+             ('targets', numpy.array([[0, 1, 2], [1, 0, 1], [1, 1, 1], [2, 0, 0]]))])
+        self.neg_data = OrderedDict(
+            [('features', numpy.ones((4, 2, 2))),
+             ('targets', numpy.array([[0, -1, 2], [1, 0, -3], [1, 1, 1], [2, 0, 0]]))])
+        self.num_classes = (3, 2, 3)
+        self.stream_example = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=self.num_classes,
+            which_sources=('targets',))
+
+    def test_num_groups(self):
+        assert_equal(self.stream_example.num_groups, 3)
+
+    def test_total_classes(self):
+        assert_equal(self.stream_example.total_classes, 3 + 2 + 3)
+
+    def test_transform_source_example(self):
+        assert_equal(
+            list(self.stream_example.get_epoch_iterator()),
+            [(numpy.ones((2, 2)), numpy.array([[1, 0, 0, 0, 1, 0, 0, 1]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 1, 0, 1, 0, 0, 1, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 1, 0, 0, 1, 0, 1, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 0, 1, 1, 0, 1, 0, 0]]))])
+
+        stream_example_invalid = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=[2, 3, 3],
+            which_sources=('targets',))
+
+        assert_raises(ValueError, list, stream_example_invalid.get_epoch_iterator())
+
+        source_example_negative = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.neg_data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=self.num_classes,
+            which_sources=('targets',))
+
+        assert_raises(ValueError, list, source_example_negative.get_epoch_iterator())
+
+    def test_transform_source_batch(self):
+        stream_batch = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialScheme(4, 2)),
+            num_classes=self.num_classes,
+            which_sources=('targets',))
+
+        assert_equal(
+            list(stream_batch.get_epoch_iterator()),
+            [(numpy.ones((2, 2, 2)),
+              numpy.array([[1, 0, 0, 0, 1, 0, 0, 1], [0, 1, 0, 1, 0, 0, 1, 0], ])),
+             (numpy.ones((2, 2, 2)),
+              numpy.array([[0, 1, 0, 0, 1, 0, 1, 0], [0, 0, 1, 1, 0, 1, 0, 0]])),
+             ]
+        )
+
+        stream_batch_invalid = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialScheme(4, 2)),
+            num_classes=[2, 3, 3],
+            which_sources=('targets',))
+
+        assert_raises(ValueError, list, stream_batch_invalid.get_epoch_iterator())
+        stream_batch_negative = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.neg_data),
+                       iteration_scheme=SequentialScheme(4, 2)),
+            num_classes=self.num_classes,
+            which_sources=('targets',))
+
+        assert_raises(ValueError, list, stream_batch_negative.get_epoch_iterator())
+
+
 class TestOneHotEncoding(object):
     def setUp(self):
         self.data = OrderedDict(
@@ -874,26 +951,26 @@ class TestDrop(object):
         assert_raises(ValueError, self.dropstream._border_func, **kwargs)
         # Test border dropping for images
         # Source
-        array = numpy.arange(5*5).reshape([1, 1, 5, 5])
+        array = numpy.arange(5 * 5).reshape([1, 1, 5, 5])
         result = numpy.zeros([5, 5]).reshape([1, 1, 5, 5])
         result[:, :, 2, 2] = 12
         kwargs = {'volume': array, 'border': 2, 'flag': 'source'}
         assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
         # Example
-        array = numpy.arange(5*5).reshape([1, 5, 5])
+        array = numpy.arange(5 * 5).reshape([1, 5, 5])
         result = numpy.zeros([5, 5]).reshape([1, 5, 5])
         result[:, 2, 2] = 12
         kwargs = {'volume': array, 'border': 2, 'flag': 'example'}
         assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
         # Test border dropping for volumes
         # Source
-        array = numpy.arange(5*5*5).reshape([1, 1, 5, 5, 5])
+        array = numpy.arange(5 * 5 * 5).reshape([1, 1, 5, 5, 5])
         result = numpy.zeros([5, 5, 5]).reshape([1, 1, 5, 5, 5])
         result[:, :, 2, 2, 2] = 62
         kwargs = {'volume': array, 'border': 2, 'flag': 'source'}
         assert numpy.allclose(result, self.dropstream._border_func(**kwargs))
         # Example
-        array = numpy.arange(5*5*5).reshape([1, 5, 5, 5])
+        array = numpy.arange(5 * 5 * 5).reshape([1, 5, 5, 5])
         result = numpy.zeros([5, 5, 5]).reshape([1, 5, 5, 5])
         result[:, 2, 2, 2] = 62
         kwargs = {'volume': array, 'border': 2, 'flag': 'example'}
@@ -901,7 +978,7 @@ class TestDrop(object):
 
     def test_dropout_func(self):
         rng = numpy.random.RandomState(123)
-        array = numpy.arange(5*5).reshape([5, 5])
+        array = numpy.arange(5 * 5).reshape([5, 5])
         result = array.copy()
         result[1, 1] = 0
         result[4, 1] = 0
@@ -914,7 +991,7 @@ class TestDrop(object):
         assert_raises(ValueError, self.dropstream.transform_source_example,
                       **kwargs)
         # No transformation
-        array = numpy.arange(5*5*5).reshape([1, 5, 5, 5])
+        array = numpy.arange(5 * 5 * 5).reshape([1, 5, 5, 5])
         kwargs = {'example': array, 'source_name': '420'}
         assert numpy.allclose(self.dropstream.transform_source_example(
             array, '420'), array)
@@ -928,7 +1005,7 @@ class TestDrop(object):
             array, '420'), result)
         # Dropout
         rng = numpy.random.RandomState(123)
-        array = numpy.arange(5*5).reshape([1, 5, 5])
+        array = numpy.arange(5 * 5).reshape([1, 5, 5])
         result = array.copy()
         result[:, 1, 1] = 0
         result[:, 4, 1] = 0
@@ -947,7 +1024,7 @@ class TestDrop(object):
                       **kwargs)
         # Test batch
         # No transformation
-        array = numpy.arange(5*5*5).reshape([1, 1, 5, 5, 5])
+        array = numpy.arange(5 * 5 * 5).reshape([1, 1, 5, 5, 5])
         kwargs = {'source': array, 'source_name': '420'}
         assert numpy.allclose(self.dropstream.transform_source_batch(
             array, '420'), array)
@@ -961,7 +1038,7 @@ class TestDrop(object):
                               result)
         # Dropout
         rng = numpy.random.RandomState(123)
-        array = numpy.arange(5*5).reshape([1, 1, 5, 5])
+        array = numpy.arange(5 * 5).reshape([1, 1, 5, 5])
         result = array.copy()
         result[:, :, 1, 1] = 0
         result[:, :, 4, 1] = 0
