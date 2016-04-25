@@ -1,14 +1,13 @@
+import logging
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
-import logging
 from multiprocessing import Process, Queue
 
 import numpy
+import pyximport
 import warnings
 from picklable_itertools import chain, ifilter, izip
 from six import add_metaclass, iteritems
-
-import pyximport
 
 pyximport.install()
 
@@ -16,6 +15,7 @@ from fuel import config
 from fuel.streams import AbstractDataStream
 from fuel.schemes import BatchSizeScheme
 from ..exceptions import AxisLabelsMismatchError
+import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -1087,10 +1087,15 @@ class StructuredOneHotEncoding(SourcewiseTransformer):
 
     """
 
-    def __init__(self, data_stream, num_classes, **kwargs):
+    def __init__(self, data_stream, num_classes, ignore_groups=None, **kwargs):
         super(StructuredOneHotEncoding, self).__init__(
             data_stream, data_stream.produces_examples, **kwargs)
         self.num_classes = num_classes
+        if ignore_groups:
+            if any(g < 0 or g >= self.num_groups for g in ignore_groups):
+                raise ValueError("ignore_groups should be a list of integers between 0 and len(num_classes).")
+
+        self.ignore_groups = ignore_groups or []
 
     @property
     def num_groups(self):
@@ -1098,10 +1103,16 @@ class StructuredOneHotEncoding(SourcewiseTransformer):
 
     @property
     def total_classes(self):
-        return reduce(lambda a, b: a + b, self.num_classes)
+        total = 0
+        for g, n in enumerate(self.num_classes):
+            if g not in self.ignore_groups:
+                total += n
+        return total
+
+
 
     def transform_source_example(self, source_example, source_name):
-        if any(source_example < 0):
+        if np.any(source_example < 0):
             raise ValueError("source_example ({}) must contain "
                              "int values >= 0".format(source_example))
         if any(source_example[h] >= self.num_classes[h] for h in xrange(self.num_groups)):
@@ -1111,12 +1122,13 @@ class StructuredOneHotEncoding(SourcewiseTransformer):
         output = numpy.zeros((1, self.total_classes))
         output_offset = 0
         for label_h in xrange(self.num_groups):
-            output[0, output_offset + source_example[label_h]] = 1
-            output_offset += self.num_classes[label_h]
+            if label_h not in self.ignore_groups:
+                output[0, output_offset + source_example[label_h]] = 1
+                output_offset += self.num_classes[label_h]
         return output
 
     def transform_source_batch(self, source_batch, source_name):
-        if any(source_batch.flat < 0):
+        if np.any(source_batch.flat < 0):
             raise ValueError("source_batch ({}) must contain "
                              "int values >= 0".format(source_batch))
         if any(numpy.max(source_batch[:, h]) >= self.num_classes[h] for h in xrange(self.num_groups)):
@@ -1126,9 +1138,10 @@ class StructuredOneHotEncoding(SourcewiseTransformer):
                              dtype=source_batch.dtype)
         output_offset = 0
         for label_h in xrange(self.num_groups):
-            for i in range(self.num_classes[label_h]):
-                output[source_batch[:, label_h] == i, i + output_offset] = 1
-            output_offset += self.num_classes[label_h]
+            if label_h not in self.ignore_groups:
+                for i in range(self.num_classes[label_h]):
+                    output[source_batch[:, label_h] == i, i + output_offset] = 1
+                output_offset += self.num_classes[label_h]
         return output
 
 

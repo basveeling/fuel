@@ -727,6 +727,51 @@ class TestStructuredOneHotEncoding(object):
     def test_total_classes(self):
         assert_equal(self.stream_example.total_classes, 3 + 2 + 3)
 
+    def test_ignore_groups(self):
+        stream_example = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=self.num_classes,
+            ignore_groups=[0, 2],
+            which_sources=('targets',))
+
+        assert_equal(
+            list(stream_example.get_epoch_iterator()),
+            [(numpy.ones((2, 2)), numpy.array([[0, 1]])),
+             (numpy.ones((2, 2)), numpy.array([[1, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 1]])),
+             (numpy.ones((2, 2)), numpy.array([[1, 0]]))])
+
+        stream_example2 = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialExampleScheme(4)),
+            num_classes=self.num_classes,
+            ignore_groups=[1, 2],
+            which_sources=('targets',))
+
+        assert_equal(
+            list(stream_example2.get_epoch_iterator()),
+            [(numpy.ones((2, 2)), numpy.array([[1, 0, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 1, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 1, 0]])),
+             (numpy.ones((2, 2)), numpy.array([[0, 0, 1]]))])
+
+        stream_batch = StructuredOneHotEncoding(
+            DataStream(IndexableDataset(self.data),
+                       iteration_scheme=SequentialScheme(4, 2)),
+            num_classes=self.num_classes,
+            ignore_groups=[0, 2],
+            which_sources=('targets',))
+
+        assert_equal(
+            list(stream_batch.get_epoch_iterator()),
+            [(numpy.ones((2, 2, 2)),
+              numpy.array([[0, 1], [1, 0]])),
+             (numpy.ones((2, 2, 2)),
+              numpy.array([[0, 1], [1, 0]])),
+             ]
+        )
+
     def test_transform_source_example(self):
         assert_equal(
             list(self.stream_example.get_epoch_iterator()),
