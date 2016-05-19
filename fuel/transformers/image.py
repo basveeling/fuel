@@ -1144,7 +1144,7 @@ class Random2DRotation(SourcewiseTransformer, ExpectsAxisLabels):
 
     def _example_transform(self, example, rotation_angle):
         dt = example.dtype
-        if dt == 'float32' or dt == 'float64':
+        if numpy.issubdtype(dt, numpy.float):
             example = numpy.stack([numpy.array(Image.fromarray(ch).
                                                rotate(rotation_angle,
                                                       resample=self.resample))
