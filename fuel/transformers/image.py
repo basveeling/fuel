@@ -845,6 +845,7 @@ class RandomSpatialFlip(SourcewiseTransformer):
         if self.rng is None:
             self.rng = numpy.random.RandomState(config.default_seed)
         kwargs.setdefault('produces_examples', data_stream.produces_examples)
+        kwargs.setdefault('axis_labels', data_stream.axis_labels)
         super(RandomSpatialFlip, self).__init__(data_stream, **kwargs)
 
     def transform_source_example(self, source_example, source_name,
