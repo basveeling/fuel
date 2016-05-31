@@ -1051,9 +1051,9 @@ class OneHotEncodingND(OneHotEncoding):
             if source_batch.shape[1] != 1:
                 warnings.warn("source_example has no channel dimension.")
                 source_batch = numpy.expand_dims(source_batch, axis=1)
-                output = numpy.zeros([source_batch.shape[0], self.num_classes] +
-                                     list(source_batch.shape[2:]),
-                                     dtype=source_batch.dtype)
+                output = numpy.zeros(
+                    [source_batch.shape[0], self.num_classes] +
+                    list(source_batch.shape[2:]), dtype=source_batch.dtype)
 
             for i in range(self.num_classes):
                 # Set the output of channel i to be the output of the
