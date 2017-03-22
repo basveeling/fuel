@@ -903,16 +903,48 @@ class Rename(AgnosticTransformer):
     names : dict
         A dictionary mapping the old and new names of the sources
         to rename.
+    on_non_existent : str, optional
+        Desired behaviour when a source specified as a key in `names`
+        is not provided by the streams: see `on_overwrite` above for
+        description of possible values. Default is 'raise'.
 
     """
 
-    def __init__(self, data_stream, names, **kwargs):
+    def __init__(self, data_stream, names, on_non_existent='raise', **kwargs):
+        if on_non_existent not in ('raise', 'ignore', 'warn'):
+            raise ValueError("on_non_existent must be one of 'raise', "
+                             "'ignore', 'warn'")
+        # We allow duplicate values in the full dictionary, but those
+        # that correspond to keys that are real sources in the data stream
+        # must be unique. This lets you use one piece of code including
+        # a Rename transformer to map disparately named sources in
+        # different datasets to a common name.
+        usable_names = {k: v for k, v in iteritems(names)
+                        if k in data_stream.sources}
+        if len(set(usable_names.values())) != len(usable_names):
+            raise KeyError("multiple old source names cannot map to "
+                           "the same new source name")
         sources = list(data_stream.sources)
+        sources_lookup = {n: i for i, n in enumerate(sources)}
         for old, new in iteritems(names):
-            if old not in sources:
-                raise KeyError("%s not in the sources of the stream" % old)
+            if new in sources_lookup and new not in names:
+                if old in usable_names:
+                    message = ("Renaming source '{}' to '{}' "
+                               "would create two sources named '{}'"
+                               .format(old, new, new))
+                    raise KeyError(message)
+            if old not in sources_lookup:
+                message = ("Renaming source '{}' to '{}': "
+                           "stream does not provide a source '{}'"
+                           .format(old, new, old))
+                if on_non_existent == 'raise':
+                    raise KeyError(message)
+                else:
+                    log_level = {'warn': logging.WARNING,
+                                 'ignore': logging.DEBUG}
+                    log.log(log_level[on_non_existent], message)
             else:
-                sources[sources.index(old)] = new
+                sources[sources_lookup[old]] = new
         self.sources = tuple(sources)
         if data_stream.axis_labels:
             kwargs.setdefault(
@@ -1069,6 +1101,34 @@ class OneHotEncodingND(OneHotEncoding):
                              .format(source_batch.dtype))
 
 
+class HierarchicalOneHotEncoding(SourcewiseTransformer):
+    def __init__(self, data_stream, num_classes, max_per_level, **kwargs):
+        super(HierarchicalOneHotEncoding, self).__init__(
+            data_stream, data_stream.produces_examples, **kwargs)
+        self.num_classes = num_classes
+        self.max_per_level = max_per_level
+
+    def transform_source_example(self, source_example, source_name):
+        # TODO: verify assumptions
+        output = numpy.zeros((1, sum(self.max_per_level)))
+        output_offset = 0
+        for i, classes_for_level in enumerate(self.max_per_level):
+            output[0, output_offset + source_example[i]] = 1
+            output_offset += classes_for_level
+        return output
+
+    def transform_source_batch(self, source_batch, source_name):
+        # TODO: verify assumptions
+        output = numpy.zeros((source_batch.shape[0], sum(self.max_per_level)),
+                             dtype=source_batch.dtype)
+        output_offset = 0
+        for i, classes_for_level in enumerate(self.max_per_level):
+            for j in range(classes_for_level):
+                output[source_batch[:, i] == j, j + output_offset] = 1
+            output_offset += classes_for_level
+        return output
+
+
 class StructuredOneHotEncoding(SourcewiseTransformer):
     """Converts a group of k integer target variables to structured
     one hot encoding.
@@ -1108,8 +1168,6 @@ class StructuredOneHotEncoding(SourcewiseTransformer):
             if g not in self.ignore_groups:
                 total += n
         return total
-
-
 
     def transform_source_example(self, source_example, source_name):
         if np.any(source_example < 0):
